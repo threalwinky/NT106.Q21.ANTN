@@ -6,8 +6,8 @@ Netrix là hệ thống remote control theo mô hình client-server.
 
 Kiến trúc của bản `1.0.2` gồm 5 phần chính:
 
-1. `C# Client`
-2. `Java Client`
+1. `C# Client Host`
+2. `C# Client Remote Peer`
 3. `Auth Server`
 4. `Load Balancer`
 5. `Main Server Cluster`
@@ -58,10 +58,11 @@ Mục tiêu của kiến trúc này là:
           +-----------------+-----------------+
           |                                   |
           v                                   v
-  +----------------------+          +----------------------+
-  |   C# Client          |          |   Java Client        |
-  | Windows / WinForms   |          | JVM / Swing          |
-  +----------------------+          +----------------------+
+  +----------------------+          +------------------------------+
+  |  C# Client Host      |          | C# Client Remote Peer        |
+  |  Windows / WinForms  |          | Windows / WinForms           |
+  |                      |          | Role: Controller or Viewer   |
+  +----------------------+          +------------------------------+
 ```
 
 ---
@@ -71,10 +72,10 @@ Mục tiêu của kiến trúc này là:
 ## Internet Mode
 
 ```text
-User
+Users
   |
   v
-C# Client / Java Client
+Two C# Clients
   |
   +--> Auth Server
   |      |
@@ -98,7 +99,7 @@ Selected Main Server
 ## LAN Mode
 
 ```text
-Host / Controller / Viewer
+Host / Remote Peer
   |
   v
 Client
@@ -133,15 +134,18 @@ Vai trò:
 6. Nếu là controller thì gửi chuột và bàn phím.
 7. Chat và file transfer.
 8. Hỗ trợ `secure_payload` theo room password.
+9. Có thể chạy trên hai máy khác nhau với hai vai trò logic:
+   - `Host`
+   - `Remote Peer` với mode `Controller` hoặc `Viewer`
 
-### `java/netrix-java-client`
+### Multi-client Topology
 
-Vai trò:
+Ở trạng thái hiện tại của repo, tầng client nên được hiểu là hai instance của cùng một `C# client`, ví dụ:
 
-1. Client JVM cho Linux hoặc môi trường không chạy được WinForms.
-2. Dùng cùng room protocol và WebSocket contract với C# client.
-3. Hỗ trợ secure room payload.
-4. Dùng Swing cho UI và AWT Robot cho input/capture.
+1. `C# Client Host`
+2. `C# Client Remote Peer`
+
+Hai instance này dùng cùng executable, cùng protocol, chỉ khác vai trò và mode kết nối.
 
 ---
 
@@ -364,7 +368,7 @@ Failover hiện tại là failover ở mức `node selection`, không phải fai
 1. Bản `1.0.2` hiện chỉ hỗ trợ `1 host + 1 remote peer`
 2. Room state của main server vẫn lưu trong memory
 3. Chưa có session migration giữa các node
-4. Client chính thức mạnh nhất vẫn là C# Windows client
+4. Client hiện tại trong repo là C# Windows client
 
 ---
 
