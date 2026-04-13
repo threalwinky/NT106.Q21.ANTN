@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+import os
 import sys
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from psycopg2 import Error as PsycopgError
+from psycopg2 import connect
+from psycopg2.extras import RealDictCursor
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR / "shared"))
@@ -24,7 +28,26 @@ from netrix_shared.security import (  # noqa: E402
 app = FastAPI(title="Netrix Auth Server", version="1.0.2")
 
 JWT_CONFIG = load_jwt_config()
-DB_PATH = Path(__file__).resolve().with_name("netrix_auth.db")
+
+
+@dataclass(frozen=True)
+class DatabaseConfig:
+    host: str
+    port: int
+    dbname: str
+    user: str
+    password: str
+    connect_timeout: int = 5
+
+
+DB_CONFIG = DatabaseConfig(
+    host=os.getenv("NETRIX_AUTH_DB_HOST", "localhost"),
+    port=int(os.getenv("NETRIX_AUTH_DB_PORT", "5433")),
+    dbname=os.getenv("NETRIX_AUTH_DB_NAME", "netrix_auth"),
+    user=os.getenv("NETRIX_AUTH_DB_USER", "netrix"),
+    password=os.getenv("NETRIX_AUTH_DB_PASSWORD", "netrix"),
+    connect_timeout=int(os.getenv("NETRIX_AUTH_DB_TIMEOUT", "5")),
+)
 
 
 class AuthPayload(BaseModel):
@@ -39,32 +62,47 @@ class TokenResponse(BaseModel):
     username: str
 
 
-def get_connection() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH, check_same_thread=False)
-    connection.row_factory = sqlite3.Row
-    return connection
+def get_connection():
+    return connect(
+        host=DB_CONFIG.host,
+        port=DB_CONFIG.port,
+        dbname=DB_CONFIG.dbname,
+        user=DB_CONFIG.user,
+        password=DB_CONFIG.password,
+        connect_timeout=DB_CONFIG.connect_timeout,
+        cursor_factory=RealDictCursor,
+        application_name="netrix-auth-server",
+    )
 
 
 def init_db() -> None:
-    with closing(get_connection()) as connection:
-        connection.executescript(
+    with closing(get_connection()) as connection, connection.cursor() as cursor:
+        cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
-                username TEXT PRIMARY KEY,
+                username VARCHAR(50) PRIMARY KEY,
                 password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS sessions (
-                jti TEXT PRIMARY KEY,
-                username TEXT NOT NULL,
-                issued_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL,
-                revoked INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY(username) REFERENCES users(username)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """
         )
+        cursor.execute(
+            """
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                jti TEXT PRIMARY KEY,
+                username VARCHAR(50) NOT NULL,
+                issued_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked BOOLEAN NOT NULL DEFAULT FALSE,
+                CONSTRAINT fk_sessions_username
+                    FOREIGN KEY(username)
+                    REFERENCES users(username)
+                    ON DELETE CASCADE
+            );
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);")
         connection.commit()
 
 
@@ -73,27 +111,30 @@ def startup() -> None:
     init_db()
 
 
-def find_user(connection: sqlite3.Connection, username: str) -> sqlite3.Row | None:
-    return connection.execute(
-        "SELECT username, password_hash FROM users WHERE username = ?",
-        (username,),
-    ).fetchone()
+def find_user(connection, username: str):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT username, password_hash FROM users WHERE username = %s",
+            (username,),
+        )
+        return cursor.fetchone()
 
 
-def issue_token(connection: sqlite3.Connection, username: str) -> TokenResponse:
+def issue_token(connection, username: str) -> TokenResponse:
     token, claims = create_access_token(
         username=username,
         secret=JWT_CONFIG.secret,
         issuer=JWT_CONFIG.issuer,
         lifetime_minutes=JWT_CONFIG.lifetime_minutes,
     )
-    connection.execute(
-        """
-        INSERT INTO sessions (jti, username, issued_at, expires_at, revoked)
-        VALUES (?, ?, ?, ?, 0)
-        """,
-        (claims["jti"], username, claims["iat"], claims["exp"]),
-    )
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO sessions (jti, username, issued_at, expires_at, revoked)
+            VALUES (%s, %s, %s, %s, FALSE)
+            """,
+            (claims["jti"], username, claims["iat"], claims["exp"]),
+        )
     connection.commit()
     return TokenResponse(
         access_token=token,
@@ -150,8 +191,22 @@ async def read_auth_payload(request: Request) -> AuthPayload:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "version": "1.0.2"}
+def health() -> dict[str, str | int]:
+    try:
+        with closing(get_connection()) as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+    except PsycopgError as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+
+    return {
+        "status": "ok",
+        "version": "1.0.2",
+        "database": "postgresql",
+        "db_host": DB_CONFIG.host,
+        "db_port": DB_CONFIG.port,
+        "db_name": DB_CONFIG.dbname,
+    }
 
 
 @app.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -161,13 +216,14 @@ async def register(request: Request) -> TokenResponse:
         if find_user(connection, payload.username) is not None:
             raise HTTPException(status_code=409, detail="Username already exists")
 
-        connection.execute(
-            """
-            INSERT INTO users (username, password_hash, created_at)
-            VALUES (?, ?, datetime('now'))
-            """,
-            (payload.username, hash_password(payload.password)),
-        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO users (username, password_hash)
+                VALUES (%s, %s)
+                """,
+                (payload.username, hash_password(payload.password)),
+            )
         connection.commit()
         return issue_token(connection, payload.username)
 
@@ -196,14 +252,16 @@ def validate(authorization: str | None = Header(default=None)) -> dict[str, str 
         raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
 
     with closing(get_connection()) as connection:
-        session_row = connection.execute(
-            """
-            SELECT revoked, expires_at
-            FROM sessions
-            WHERE jti = ? AND username = ?
-            """,
-            (claims["jti"], claims["sub"]),
-        ).fetchone()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT revoked, expires_at
+                FROM sessions
+                WHERE jti = %s AND username = %s
+                """,
+                (claims["jti"], claims["sub"]),
+            )
+            session_row = cursor.fetchone()
         if session_row is None or session_row["revoked"]:
             raise HTTPException(status_code=401, detail="Session not active")
         return {

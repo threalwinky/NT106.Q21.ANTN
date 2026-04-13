@@ -29,7 +29,7 @@ Mục tiêu của kiến trúc này là:
                  |     Auth Server      |
                  | register / login     |
                  | bcrypt + JWT         |
-                 | SQLite sessions      |
+                 | PostgreSQL sessions  |
                  +----------+-----------+
                             |
                             v
@@ -160,7 +160,8 @@ Vai trò:
 3. `GET /validate`
 4. Hash password bằng `bcrypt`
 5. Tạo `JWT`
-6. Lưu session vào `SQLite`
+6. Lưu session vào `PostgreSQL`
+7. Kết nối mặc định tới `localhost:5433`
 
 Auth server không xử lý frame, input hoặc room realtime.
 
@@ -362,3 +363,30 @@ Failover hiện tại là failover ở mức `node selection`, không phải fai
 3. Chưa có shared state hoặc replication giữa các main server
 
 ---
+
+## Current Constraints
+
+1. Bản `1.0.2` hiện chỉ hỗ trợ `1 host + 1 remote peer`
+2. Room state của main server vẫn lưu trong memory
+3. Chưa có session migration giữa các node
+4. Client hiện tại trong repo là C# Windows client
+
+---
+
+## Summary
+
+Kiến trúc của Netrix `1.0.2` là kiến trúc nhiều tầng:
+
+1. `Auth Server` lo xác thực
+2. `Load Balancer` lo chọn node
+3. `Main Server Cluster` lo room và realtime relay
+4. `Client` lo UI, capture, render và remote input
+5. `Shared Package` lo security helper dùng chung
+
+Đây là một kiến trúc phù hợp để trình bày đồ án vì:
+
+1. Dễ chứng minh tách lớp trách nhiệm
+2. Có hỗ trợ cả LAN và Internet
+3. Có multi-node ở tầng main server
+4. Có failover cơ bản
+5. Dễ mở rộng thêm replication hoặc dashboard mạnh hơn ở bản sau
