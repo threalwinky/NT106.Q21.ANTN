@@ -1,0 +1,14 @@
+[
+  {
+    "name": "main-server-1",
+    "health_url": "http://main-server-1:8000/health"
+  },
+  {
+    "name": "main-server-2",
+    "health_url": "http://main-server-2:8003/health"
+  },
+  {
+    "name": "main-server-3",
+    "health_url": "http://main-server-3:8004/health"
+  }
+]

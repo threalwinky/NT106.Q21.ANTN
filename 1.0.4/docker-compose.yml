@@ -1,0 +1,159 @@
+version: "2.4"
+
+services:
+  cloud:
+    build:
+      context: ./cloud-server
+    container_name: netrix-cloud
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${NETRIX_AUTH_DB_NAME:-netrix_auth}
+      POSTGRES_USER: ${NETRIX_AUTH_DB_USER:-netrix}
+      POSTGRES_PASSWORD: ${NETRIX_AUTH_DB_PASSWORD:-netrix}
+    ports:
+      - "${NETRIX_AUTH_DB_HOST_PORT:-5433}:5433"
+    volumes:
+      - netrix-auth-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -p 5433"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  auth-server:
+    build:
+      context: .
+      dockerfile: auth-server/Dockerfile
+    container_name: netrix-auth-server
+    restart: unless-stopped
+    environment:
+      NETRIX_AUTH_DB_HOST: cloud
+      NETRIX_AUTH_DB_PORT: "5433"
+      NETRIX_AUTH_DB_NAME: ${NETRIX_AUTH_DB_NAME:-netrix_auth}
+      NETRIX_AUTH_DB_USER: ${NETRIX_AUTH_DB_USER:-netrix}
+      NETRIX_AUTH_DB_PASSWORD: ${NETRIX_AUTH_DB_PASSWORD:-netrix}
+      NETRIX_JWT_SECRET: ${NETRIX_JWT_SECRET:-netrix-dev-secret}
+      NETRIX_JWT_ISSUER: ${NETRIX_JWT_ISSUER:-netrix-auth}
+      NETRIX_JWT_LIFETIME_MINUTES: ${NETRIX_JWT_LIFETIME_MINUTES:-120}
+      NETRIX_ACCESS_LOG: ${NETRIX_ACCESS_LOG:-false}
+    ports:
+      - "${NETRIX_AUTH_PORT:-8001}:8001"
+    depends_on:
+      cloud:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  main-server-1:
+    build:
+      context: .
+      dockerfile: main-server/Dockerfile
+    container_name: netrix-main-server-1
+    restart: unless-stopped
+    environment:
+      NETRIX_JWT_SECRET: ${NETRIX_JWT_SECRET:-netrix-dev-secret}
+      NETRIX_JWT_ISSUER: ${NETRIX_JWT_ISSUER:-netrix-auth}
+      NETRIX_ACCESS_LOG: ${NETRIX_ACCESS_LOG:-false}
+    command:
+      - python
+      - app.py
+      - --port
+      - "8000"
+      - --server-name
+      - main-server-1
+      - --public-ws-url
+      - ${NETRIX_MAIN1_PUBLIC_WS_URL:-wss://main.threalwinky.id.vn/ws}
+    ports:
+      - "${NETRIX_MAIN1_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  main-server-2:
+    build:
+      context: .
+      dockerfile: main-server/Dockerfile
+    container_name: netrix-main-server-2
+    restart: unless-stopped
+    environment:
+      NETRIX_JWT_SECRET: ${NETRIX_JWT_SECRET:-netrix-dev-secret}
+      NETRIX_JWT_ISSUER: ${NETRIX_JWT_ISSUER:-netrix-auth}
+      NETRIX_ACCESS_LOG: ${NETRIX_ACCESS_LOG:-false}
+    command:
+      - python
+      - app.py
+      - --port
+      - "8003"
+      - --server-name
+      - main-server-2
+      - --public-ws-url
+      - ${NETRIX_MAIN2_PUBLIC_WS_URL:-wss://main2.threalwinky.id.vn/ws}
+    ports:
+      - "${NETRIX_MAIN2_PORT:-8003}:8003"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  main-server-3:
+    build:
+      context: .
+      dockerfile: main-server/Dockerfile
+    container_name: netrix-main-server-3
+    restart: unless-stopped
+    environment:
+      NETRIX_JWT_SECRET: ${NETRIX_JWT_SECRET:-netrix-dev-secret}
+      NETRIX_JWT_ISSUER: ${NETRIX_JWT_ISSUER:-netrix-auth}
+      NETRIX_ACCESS_LOG: ${NETRIX_ACCESS_LOG:-false}
+    command:
+      - python
+      - app.py
+      - --port
+      - "8004"
+      - --server-name
+      - main-server-3
+      - --public-ws-url
+      - ${NETRIX_MAIN3_PUBLIC_WS_URL:-wss://main3.threalwinky.id.vn/ws}
+    ports:
+      - "${NETRIX_MAIN3_PORT:-8004}:8004"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  load-balancer:
+    build:
+      context: .
+      dockerfile: load-balancer/Dockerfile
+    container_name: netrix-load-balancer
+    restart: unless-stopped
+    environment:
+      NETRIX_LB_REGISTRY_PATH: /app/load-balancer/servers.compose.json
+      NETRIX_ALLOW_PRIVATE_WS_URLS: ${NETRIX_ALLOW_PRIVATE_WS_URLS:-false}
+      NETRIX_JWT_SECRET: ${NETRIX_JWT_SECRET:-netrix-dev-secret}
+      NETRIX_JWT_ISSUER: ${NETRIX_JWT_ISSUER:-netrix-auth}
+      NETRIX_ACCESS_LOG: ${NETRIX_ACCESS_LOG:-false}
+    ports:
+      - "${NETRIX_LB_PORT:-8002}:8002"
+    depends_on:
+      main-server-1:
+        condition: service_healthy
+      main-server-2:
+        condition: service_healthy
+      main-server-3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  netrix-auth-data:

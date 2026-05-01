@@ -1,0 +1,47 @@
+flowchart TD
+    Host["Client A<br/>Host<br/>C# WinForms<br/>DXGI/GDI capture<br/>H.264/OpenH264 encode<br/>JPEG fallback"]
+    Auth["Auth Server<br/>register / login / validate<br/>bcrypt + JWT"]
+    DB["PostgreSQL<br/>users + sessions<br/>localhost:5433"]
+    LB["Load Balancer<br/>health check<br/>select node<br/>room affinity"]
+
+    subgraph Cluster["Main Server Cluster"]
+        direction LR
+        M1["main-server-1<br/>:8000"]
+        M2["main-server-2<br/>:8003"]
+        M3["main-server-3<br/>:8004"]
+    end
+
+    Relay["Selected Main Server<br/>create/join room<br/>JWT + room password + LAN scope validation<br/>controller approval<br/>relay only, no media processing<br/>1 host + 1 remote peer"]
+    Peer["Client B<br/>Remote Peer<br/>C# WinForms<br/>H.264/JPEG frame render<br/>input + chat + file transfer"]
+    Lan["LAN mode<br/>manual ws://main-server/ws"]
+
+    Host -->|"register / login"| Auth
+    Peer -->|"register / login"| Auth
+    Auth -->|"read/write account and session data"| DB
+
+    Host -->|"Internet mode: request node"| LB
+    Peer -->|"Internet mode: request node"| LB
+    LB -->|"health check"| M1
+    LB -->|"health check"| M2
+    LB -->|"health check"| M3
+    LB -->|"return selected ws_url"| Relay
+
+    Host -.->|"LAN mode: direct WebSocket"| Relay
+    Peer -.->|"LAN mode: direct WebSocket"| Relay
+    Lan -.-> Relay
+
+    Host -->|"create_room<br/>frame<br/>secure_payload"| Relay
+    Relay -->|"codec-tagged encrypted frames + room events"| Peer
+
+    Peer -->|"join_room<br/>input<br/>chat<br/>file_offer / file_chunk / file_complete"| Relay
+    Relay -->|"input / chat / file events"| Host
+
+    classDef client fill:#eef4ff,stroke:#4a67b3,color:#122348,stroke-width:1.5px;
+    classDef service fill:#eef9ef,stroke:#4a8f58,color:#18311f,stroke-width:1.5px;
+    classDef data fill:#fff6e6,stroke:#c58727,color:#4f2d00,stroke-width:1.5px;
+    classDef infra fill:#eef7fb,stroke:#3f7f97,color:#14313d,stroke-width:1.5px;
+
+    class Host,Peer client;
+    class Auth,LB,Relay service;
+    class DB data;
+    class M1,M2,M3,Lan infra;
